@@ -1,0 +1,11 @@
+BasedOnStyle: Allman
+IndentWidth: 4
+ColumnLimit: 120
+UseTab: Never  # 탭 대신 공백 사용
+BreakBeforeBraces: Allman  # 중괄호를 새 줄에서 시작
+AllowShortFunctionsOnASingleLine: Empty  # 짧은 함수라도 중괄호를 줄바꿈
+AlwaysBreakTemplateDeclarations: Yes  # 템플릿 선언 줄바꿈
+PointerAlignment: Left  # `int* ptr` 대신 `int *ptr` 스타일 사용
+SpacesBeforeTrailingComments: 2  # 코드와 주석 사이 여백 추가
+SpaceAfterCStyleCast: Yes  # C 스타일 캐스트 후 공백 추가 `(int) var -> (int)  var`
+SortIncludes: Yes  # `#include` 정렬

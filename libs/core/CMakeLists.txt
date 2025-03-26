@@ -1,0 +1,4 @@
+file(GLOB_RECURSE CORE_SRCS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
+
+add_library(core STATIC ${CORE_SRCS})
+add_library(MG::core ALIAS core)
