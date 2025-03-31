@@ -13,7 +13,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(ENABLE_TEST "Enable tests(unit test, logic test, performance test...)" ON)
 option(STRICT_WARNING "Strict warning" ON)
-option(SANITIZERS "" ON)
+option(SANITIZERS "" OFF)
 
 set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 

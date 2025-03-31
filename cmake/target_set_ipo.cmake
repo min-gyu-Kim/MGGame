@@ -1,13 +1,5 @@
 function(target_set_ipo)
-    set(OneValue TARGET)
-    cmake_parse_arguments(
-        target_set_warnings
-        "${options}"
-        "${OneValue}"
-        "${MultiValue}"
-        ${ARGN}
-    )
-
+    include(CheckIPOSupported)
     check_ipo_supported(RESULT result OUTPUT output)
     if(result)
         set_property(TARGET ${TARGET} PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
