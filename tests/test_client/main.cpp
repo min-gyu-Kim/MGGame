@@ -8,8 +8,6 @@
 #include <errno.h>
 #include <fcntl.h>
 
-//#include 
-
 #define SERVER_PORT 4000
 
 int main()

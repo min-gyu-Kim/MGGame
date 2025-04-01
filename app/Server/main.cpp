@@ -2,18 +2,21 @@
 
 #include <pthread.h>
 #include <sys/unistd.h>
-#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <liburing.h>
+#include <string.h>
 
-int32_t listenSockFd;
-int32_t epollFd;
+int32_t g_listenSockFd;
+io_uring g_ring;
 
 bool InitListenSocket();
-bool InitSingleEpoll();
 void Clear();
+
+char recvBfr[1024];
+char sendBfr[1024];
 
 int main()
 {
@@ -23,85 +26,161 @@ int main()
         return -1;
     }
 
-    if(false == InitSingleEpoll())
+    int result = io_uring_queue_init(16, &g_ring, 0);
+    if(result < 0)
     {
+        fprintf(stderr, "io_uring_queue_init() error\n"
+                        "error string : %s\n",
+                strerror(-result)
+        );
+        Clear();
+        return -1;
+    }
+
+    io_uring_sqe* sqe = io_uring_get_sqe(&g_ring);
+    if(nullptr == sqe)
+    {
+        fprintf(stderr, "io_uring_get_sqe() error\n"
+                        "sqe value is nullptr\n");
+        Clear();
+        return -1;
+    }
+
+    io_uring_prep_multishot_accept(sqe, g_listenSockFd, nullptr, nullptr, 0);
+    io_uring_sqe_set_data(sqe, &g_listenSockFd);
+    result = io_uring_submit(&g_ring);
+    if(result != 1)
+    {
+        fprintf(stderr, "io_uring_submit() error\n"
+                        "error string : %s\n",
+                strerror(-result)
+        );
         Clear();
         return -1;
     }
 
     while(true)
     {
-        epoll_event evts[10];
-        int32_t result = epoll_wait(epollFd, evts, 10, -1);
+        io_uring_cqe* cqe;
+        result = io_uring_wait_cqe(&g_ring, &cqe);
         if(result < 0)
         {
-            if(errno == EINTR)
-            {
+            if(result == -EINTR)
                 continue;
-            }
-            printf("epoll_wait() failed. result : %d\n", errno);
-            break;
+
+            fprintf(stderr, "io_uring_wait_cqe() error\n"
+                            "error string : %s\n",
+                    strerror(-result)
+            );
+            Clear();
+            return -1;
         }
 
-        for(int32_t i = 0; i < result; i++)
+        void* userData = io_uring_cqe_get_data(cqe);
+        if(userData == &g_listenSockFd)
         {
-            if(evts[i].data.fd == listenSockFd)
+            if(cqe->res < 0)
             {
-                int clientFd;
-                sockaddr_in clientAddr;
-                socklen_t addrSize = sizeof(clientAddr);
+                fprintf(stderr, "accept() error\n"
+                                "error string : %s\n",
+                        strerror(-cqe->res));
+                continue;
+            }
+            int clientFd = cqe->res;
+            sockaddr clientAddr{};
+            socklen_t addrSize = sizeof(clientAddr);
+            getpeername(clientFd, &clientAddr, &addrSize);
 
-                clientFd = accept(listenSockFd, (sockaddr*)&clientAddr, &addrSize);
-                if(clientFd < 0)
+            char ipAddress[32];
+            if(clientAddr.sa_family != AF_INET)
+            {
+                printf("not supported IPv6\n");
+                close(clientFd);
+                io_uring_cqe_seen(&g_ring, cqe);
+                continue;
+            }
+
+            inet_ntop(AF_INET, &((sockaddr_in*)&clientAddr)->sin_addr, ipAddress, 32);
+            printf("Accept()! %s:%d, clientFd : %d\n", ipAddress, ntohs(((sockaddr_in*)&clientAddr)->sin_port), clientFd);
+
+            sqe = io_uring_get_sqe(&g_ring);
+            if(sqe == NULL)
+            {
+                fprintf(stderr, "io_uring_get_sqe() return NULL\n");
+                break;
+            }
+
+            io_uring_prep_recv(sqe, clientFd, recvBfr, 1024, 0);
+            io_uring_sqe_set_data64(sqe, clientFd);
+            io_uring_submit(&g_ring);
+        }
+        else    // recv
+        {
+            unsigned long long clientFd = cqe->user_data;
+            bool isSend =  (clientFd & (1ULL << 32)) > 0;
+            clientFd = clientFd & ((1ULL << 32) - 1);
+
+            if(isSend)
+                printf("send Ok\n");
+
+            if(cqe->res < 0)
+            {
+                if(false == isSend)
                 {
-                    printf("accept() failed. result : %d\n", errno);
+                    fprintf(stderr, "recv() error\n"
+                                    "error string : %s, fd : %d\n",
+                            strerror(-cqe->res), (int)clientFd
+                    );
+                }
+                else
+                {
+                    fprintf(stderr, "send() error\n"
+                                    "error string : %s, fd : %d\n",
+                            strerror(-cqe->res), (int)clientFd
+                    );
+                }
+                close(clientFd);
+            }
+            else if(cqe->res == 0)
+            {
+                printf("close socket %d, %d\n", (int)clientFd, isSend);
+                close(clientFd);
+            }
+            else if(isSend == false)
+            {
+                printf("%s : %d\n", recvBfr, cqe->res);
+
+                sqe = io_uring_get_sqe(&g_ring);
+                if(sqe == NULL)
+                {
+                    fprintf(stderr, "io_uring_get_sqe() return NULL\n");
                     break;
                 }
 
-                int flags = fcntl(clientFd, F_GETFL);
-                flags |= O_NONBLOCK;
-                int result = fcntl(clientFd, F_SETFL, flags);
-                if(-1 == result)
-                {
-                    printf("fcntl() nonblock mode failed, result : %d\n", errno);
-                    close(clientFd);
-                    break;
-                }
+                memcpy(sendBfr, recvBfr, cqe->res);
 
-                epoll_event events;
-                events.events =EPOLLIN | EPOLLET;
-                events.data.fd = clientFd;
-                if(epoll_ctl(epollFd, EPOLL_CTL_ADD, clientFd, &events) < 0)
+                io_uring_prep_recv(sqe, clientFd, recvBfr, 1024, 0);
+                io_uring_sqe_set_data64(sqe, clientFd);
+
+                sqe = io_uring_get_sqe(&g_ring);
+                if(sqe == NULL)
                 {
-                    printf("epoll_ctl() failed. In Accept, result : %d\n", errno);
+                    fprintf(stderr, "io_uring_get_sqe() return NULL\n");
                     break;
                 }
+                io_uring_prep_send(sqe, clientFd, sendBfr, cqe->res, 0);
+                unsigned long long data = (1ULL << 32) | (unsigned long long)clientFd;
+                io_uring_sqe_set_data64(sqe, data);
+
+                io_uring_submit(&g_ring);
             }
             else
             {
-                int32_t clientFd = evts[i].data.fd;
-
-                char msg[255];
-                int32_t result = recv(clientFd, msg, 255, 0);
-                if(result < 0)
-                {
-                    printf("recv() failed. result : %d\n", errno);
-                    break;
-                }
-                if(result == 0)
-                {
-                    printf("0 recv. close connection\n");
-                    break;
-                }
-
-                ssize_t sendSize = send(clientFd, msg, result, 0);
-                if(sendSize <= 0)
-                {
-                    printf("send() failed, result : %d\n", errno);
-                    break;
-                }
+                //
             }
         }
+
+        io_uring_cqe_seen(&g_ring, cqe);
     }
 
     Clear();
@@ -111,26 +190,29 @@ int main()
 
 bool InitListenSocket()
 {
-    listenSockFd = socket(AF_INET, SOCK_STREAM, 0);
-    if(listenSockFd == -1)
+    g_listenSockFd = socket(AF_INET, SOCK_STREAM, 0);
+    if(g_listenSockFd == -1)
     {
         printf("socket() failed. result : %d\n", errno);
         return false;
     }
+
+    int option = 1;
+    setsockopt(g_listenSockFd, SOL_SOCKET, SO_REUSEADDR, &option, sizeof(option));
 
     sockaddr_in serverAddr{};
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_addr.s_addr = 0;
     serverAddr.sin_port = htons(4000);
 
-    int32_t result = bind(listenSockFd, (sockaddr*)&serverAddr, sizeof(serverAddr));
+    int32_t result = bind(g_listenSockFd, (sockaddr*)&serverAddr, sizeof(serverAddr));
     if(-1 == result)
     {
         printf("bind() failed. result : %d\n", errno);
         return false;
     }
 
-    result = listen(listenSockFd, 100);
+    result = listen(g_listenSockFd, 100);
     if(-1 == result)
     {
         printf("listen() failed. result : %d\n", errno);
@@ -140,40 +222,13 @@ bool InitListenSocket()
     return true;
 }
 
-bool InitSingleEpoll()
-{
-    epollFd = epoll_create1(EPOLL_CLOEXEC);
-    if(-1 == epollFd)
-    {
-        printf("epoll_create1() failed. result : %d\n", errno);
-        return false;
-    }
-
-    epoll_event event{};
-    event.data.fd = listenSockFd;
-    event.events = EPOLLIN | EPOLLET;
-
-    int32_t result = epoll_ctl(epollFd, EPOLL_CTL_ADD, listenSockFd, &event);
-    if(-1 == result)
-    {
-        printf("epoll_ctl() failed. result : %d\n", errno);
-        return false;
-    }
-
-    return true;
-}
-
 void Clear()
 {
-    if(listenSockFd > 0)
+    if(g_listenSockFd > 0)
     {
-        close(listenSockFd);
-        listenSockFd = -1;
+        close(g_listenSockFd);
+        g_listenSockFd = -1;
     }
 
-    if(epollFd > 0)
-    {
-        close(epollFd);
-        epollFd = -1;
-    }
+    io_uring_queue_exit(&g_ring);
 }
