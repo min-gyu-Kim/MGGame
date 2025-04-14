@@ -33,6 +33,8 @@ endif(SANITIZERS)
 
 include_directories(${CMAKE_SOURCE_DIR}/include)
 
+add_subdirectory(experimental)
+
 add_subdirectory(libs)
 add_subdirectory(tests)
 add_subdirectory(app)
