@@ -9,6 +9,8 @@
 #include <liburing.h>
 #include <string.h>
 
+#define SERVER_PORT 18001
+
 int32_t g_listenSockFd;
 io_uring g_ring;
 
@@ -148,7 +150,7 @@ int main()
             }
             else if(isSend == false)
             {
-                printf("%s : %d\n", recvBfr, cqe->res);
+                printf("%d\n", cqe->res);
 
                 sqe = io_uring_get_sqe(&g_ring);
                 if(sqe == NULL)
@@ -203,7 +205,7 @@ bool InitListenSocket()
     sockaddr_in serverAddr{};
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_addr.s_addr = 0;
-    serverAddr.sin_port = htons(4000);
+    serverAddr.sin_port = htons(SERVER_PORT);
 
     int32_t result = bind(g_listenSockFd, (sockaddr*)&serverAddr, sizeof(serverAddr));
     if(-1 == result)
